@@ -15,7 +15,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleDebug
+      - name: Build
+        shell: bash
+        run: gradle assembleDebug --console=plain 2>&1 | tee build.log
+      - name: Mostrar errores
+        if: failure()
+        run: grep -E "^e: " build.log | sed 's/^/::error::/' || true
       - uses: actions/upload-artifact@v4
         with:
           name: launcher-apk
