@@ -45,7 +45,7 @@ class MainActivity : Activity() {
         val grid = GridView(this).apply {
             numColumns = 4
             verticalSpacing = dp(16)
-            selector = null
+            selector = android.graphics.drawable.ColorDrawable(Color.TRANSPARENT)
         }
         root.addView(search, LinearLayout.LayoutParams(-1, -2))
         root.addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
