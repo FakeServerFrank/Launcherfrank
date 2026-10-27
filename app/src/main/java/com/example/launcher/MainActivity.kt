@@ -1,7 +1,7 @@
 package com.example.launcher
 
 import android.app.Activity
-import android.app.WallpaperManager
+import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
@@ -12,9 +12,9 @@ import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -35,18 +35,19 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextClock
 import android.widget.TextView
+import android.widget.Toast
 
 class MainActivity : Activity() {
 
-    internal lateinit var prefs: SharedPreferences
-    internal var everyApp = listOf<App>()
+    private lateinit var prefs: SharedPreferences
+    private var everyApp = listOf<App>()
     private var allApps = listOf<App>()
     private var shown = listOf<App>()
     private var loading = false
     private var drawerOpen = false
     private var currentCat = Cat.ALL
     private var visibleCats = listOf<String>()
-    private var accent = 0xFF4FC3F7.toInt()
+    private var accent = Color.parseColor("#4FC3F7")
     private var appliedKey = ""
 
     private lateinit var root: FrameLayout
@@ -61,10 +62,10 @@ class MainActivity : Activity() {
     private lateinit var swipes: GestureDetector
     private var adapter: AppAdapter? = null
 
-    internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
-    internal val cols: Int get() = prefs.getInt("cols", 4)
-    internal val iconDp: Int get() = prefs.getInt("icon", 52)
-    internal val bgAlpha: Int get() = prefs.getInt("alpha", 150)
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    private val cols: Int get() = prefs.getInt("cols", 4)
+    private val iconDp: Int get() = prefs.getInt("icon", 52)
+    private val bgAlpha: Int get() = prefs.getInt("alpha", 150)
 
     private fun pill(color: Int, radiusDp: Int): GradientDrawable {
         val g = GradientDrawable()
@@ -76,7 +77,6 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("launcher", Context.MODE_PRIVATE)
-        loadAccent()
         root = FrameLayout(this)
         buildHome()
         buildDrawer()
@@ -107,25 +107,6 @@ class MainActivity : Activity() {
     }
 
     private fun settingsKey(): String = "" + cols + "," + iconDp + "," + bgAlpha
-
-    private fun loadAccent() {
-        try {
-            if (Build.VERSION.SDK_INT >= 27) {
-                val wc = WallpaperManager.getInstance(this).getWallpaperColors(WallpaperManager.FLAG_SYSTEM)
-                val c = wc?.primaryColor
-                if (c != null) {
-                    val argb = c.toArgb()
-                    accent = Color.rgb(
-                        (Color.red(argb) * 4 + 255 * 6) / 10,
-                        (Color.green(argb) * 4 + 255 * 6) / 10,
-                        (Color.blue(argb) * 4 + 255 * 6) / 10
-                    )
-                }
-            }
-        } catch (e: Exception) {
-            // se queda el color por defecto
-        }
-    }
 
     // ---------------------------------------------------------------- inicio
     private fun buildHome() {
@@ -184,7 +165,7 @@ class MainActivity : Activity() {
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
                 if (Math.abs(vy) < Math.abs(vx)) return false
                 if (vy < -800f) {
-                    openDrawer()
+                    openDrawer(false)
                     return true
                 }
                 if (vy > 800f) {
@@ -195,7 +176,7 @@ class MainActivity : Activity() {
             }
 
             override fun onLongPress(e: MotionEvent) {
-                showSettings()
+                openSettings()
             }
         })
         home.setOnTouchListener { _, ev -> gestures.onTouchEvent(ev) }
@@ -219,7 +200,7 @@ class MainActivity : Activity() {
         tvSettings.textSize = 13f
         tvSettings.setTextColor(Color.argb(220, 255, 255, 255))
         tvSettings.setPadding(dp(10), dp(8), dp(4), dp(8))
-        tvSettings.setOnClickListener { showSettings() }
+        tvSettings.setOnClickListener { openSettings() }
         handle.addView(tvSettings, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
         val tvHome = TextView(this)
         tvHome.text = "Inicio"
@@ -323,7 +304,7 @@ class MainActivity : Activity() {
         root.addView(drawer, FrameLayout.LayoutParams(-1, -1))
     }
 
-    internal fun openDrawer(focusSearch: Boolean = false) {
+    private fun openDrawer(focusSearch: Boolean) {
         if (!drawerOpen) {
             drawerOpen = true
             drawer.visibility = View.VISIBLE
@@ -339,7 +320,7 @@ class MainActivity : Activity() {
         }
     }
 
-    internal fun closeDrawer() {
+    private fun closeDrawer() {
         if (!drawerOpen) return
         drawerOpen = false
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -412,7 +393,7 @@ class MainActivity : Activity() {
         if (n != i) selectCat(visibleCats[n])
     }
 
-    internal fun filter() {
+    private fun filter() {
         val q = search.text.toString().trim()
         shown = if (q.isEmpty()) {
             when (currentCat) {
@@ -442,10 +423,10 @@ class MainActivity : Activity() {
     }
 
     // ------------------------------------------------------------------ apps
-    internal fun hiddenSet(): MutableSet<String> =
+    private fun hiddenSet(): MutableSet<String> =
         HashSet<String>(prefs.getStringSet("hidden", null) ?: emptySet<String>())
 
-    internal fun loadApps() {
+    private fun loadApps() {
         if (loading) return
         loading = true
         Thread {
@@ -470,7 +451,7 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    internal fun refreshLists() {
+    private fun refreshLists() {
         val hidden = hiddenSet()
         allApps = everyApp.filter { it.pkg !in hidden }
         buildDock()
@@ -478,7 +459,7 @@ class MainActivity : Activity() {
         filter()
     }
 
-    internal fun applySettings() {
+    private fun applySettings() {
         appliedKey = settingsKey()
         drawer.background = ColorDrawable(Color.argb(bgAlpha, 0, 0, 0))
         grid.numColumns = cols
@@ -519,7 +500,7 @@ class MainActivity : Activity() {
         return list
     }
 
-    internal fun dockPkgs(): List<String> {
+    private fun dockPkgs(): List<String> {
         val raw = prefs.getString("dock", null) ?: return defaultDock()
         return raw.split(",").filter { it.isNotBlank() }
     }
@@ -545,19 +526,83 @@ class MainActivity : Activity() {
         dock.visibility = if (items.isEmpty()) View.INVISIBLE else View.VISIBLE
     }
 
-    internal fun toggleDock(app: App, inDock: Boolean) {
+    private fun toggleDock(app: App, inDock: Boolean) {
         val l = dockPkgs().toMutableList()
         if (inDock) {
             l.remove(app.pkg)
         } else {
             if (l.size >= 5) {
-                android.widget.Toast.makeText(this, "El dock está lleno (máximo 5)", android.widget.Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "El dock está lleno (máximo 5)", Toast.LENGTH_SHORT).show()
                 return
             }
             l.add(app.pkg)
         }
         saveDock(l)
         buildDock()
+    }
+
+    // ----------------------------------------------------------------- menú
+    private fun openSettings() {
+        startActivity(Intent(this, SettingsActivity::class.java))
+    }
+
+    private fun dlg(): AlertDialog.Builder =
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+
+    private fun showMenu(app: App) {
+        val inDock = dockPkgs().contains(app.pkg)
+        val options = arrayOf(
+            "Información de la app",
+            "Desinstalar",
+            "Ocultar",
+            if (inDock) "Quitar del dock" else "Agregar al dock",
+            "Cambiar categoría (" + app.cat + ")"
+        )
+        dlg().setTitle(app.label).setItems(options) { _, which ->
+            when (which) {
+                0 -> startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + app.pkg))
+                )
+                1 -> startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:" + app.pkg)))
+                2 -> hideApp(app)
+                3 -> toggleDock(app, inDock)
+                4 -> pickCategory(app)
+                else -> {}
+            }
+        }.show()
+    }
+
+    private fun pickCategory(app: App) {
+        val names = (Cat.assignable + "Automática").toTypedArray()
+        dlg().setTitle("Categoría de " + app.label).setItems(names) { _, i ->
+            val e = prefs.edit()
+            if (i < Cat.assignable.size) {
+                e.putString("cat_" + app.pkg, Cat.assignable[i])
+            } else {
+                e.remove("cat_" + app.pkg)
+            }
+            e.apply()
+            loadApps()
+        }.show()
+    }
+
+    private fun hideApp(app: App) {
+        val set = hiddenSet()
+        set.add(app.pkg)
+        prefs.edit().putStringSet("hidden", set).apply()
+        refreshLists()
+        Toast.makeText(this, app.label + " oculta (se restaura en Ajustes)", Toast.LENGTH_LONG).show()
+    }
+
+    private fun expandNotifications() {
+        try {
+            val sbs = getSystemService("statusbar")
+            Class.forName("android.app.StatusBarManager")
+                .getMethod("expandNotificationsPanel")
+                .invoke(sbs)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No se pudo abrir las notificaciones", Toast.LENGTH_SHORT).show()
+        }
     }
 
     // ----------------------------------------------------------------- celdas
