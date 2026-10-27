@@ -1,19 +1,20 @@
 package com.example.launcher
 
 import android.app.Activity
-import android.app.AlertDialog
+import android.app.WallpaperManager
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
-import android.provider.Settings
 import android.text.Editable
 import android.text.InputType
 import android.text.TextUtils
@@ -26,101 +27,158 @@ import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
-import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.GridView
+import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.SeekBar
 import android.widget.TextClock
 import android.widget.TextView
-import android.widget.Toast
 
 class MainActivity : Activity() {
 
-    data class App(val label: String, val pkg: String, val icon: Drawable)
-
-    private lateinit var prefs: SharedPreferences
-
-    private var everyApp = listOf<App>()   // todas las apps
-    private var allApps = listOf<App>()    // sin las ocultas
-    private var shown = listOf<App>()      // resultado de la búsqueda
+    internal lateinit var prefs: SharedPreferences
+    internal var everyApp = listOf<App>()
+    private var allApps = listOf<App>()
+    private var shown = listOf<App>()
     private var loading = false
     private var drawerOpen = false
+    private var currentCat = Cat.ALL
+    private var visibleCats = listOf<String>()
+    private var accent = 0xFF4FC3F7.toInt()
+    private var appliedKey = ""
 
     private lateinit var root: FrameLayout
     private lateinit var dock: LinearLayout
     private lateinit var drawer: LinearLayout
     private lateinit var search: EditText
-    private lateinit var frequentLabel: TextView
-    private lateinit var frequentRow: LinearLayout
+    private lateinit var calcRow: TextView
+    private lateinit var webRow: TextView
     private lateinit var grid: GridView
+    private lateinit var tabsScroll: HorizontalScrollView
+    private lateinit var tabsRow: LinearLayout
+    private lateinit var swipes: GestureDetector
     private var adapter: AppAdapter? = null
-    private lateinit var swipeDown: GestureDetector
-    private var appliedKey = ""
 
-    private fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    internal fun dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
+    internal val cols: Int get() = prefs.getInt("cols", 4)
+    internal val iconDp: Int get() = prefs.getInt("icon", 52)
+    internal val bgAlpha: Int get() = prefs.getInt("alpha", 150)
 
-    private val cols: Int get() = prefs.getInt("cols", 4)
-    private val iconDp: Int get() = prefs.getInt("icon", 52)
-    private val bgAlpha: Int get() = prefs.getInt("alpha", 150)
+    private fun pill(color: Int, radiusDp: Int): GradientDrawable {
+        val g = GradientDrawable()
+        g.setColor(color)
+        g.cornerRadius = dp(radiusDp).toFloat()
+        return g
+    }
 
-    private fun pill(color: Int, radiusDp: Int): GradientDrawable =
-        GradientDrawable().apply {
-            setColor(color)
-            cornerRadius = dp(radiusDp).toFloat()
-        }
-
-    // ------------------------------------------------------------------
-    //  Creación de la interfaz
-    // ------------------------------------------------------------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("launcher", Context.MODE_PRIVATE)
+        loadAccent()
         root = FrameLayout(this)
+        buildHome()
+        buildDrawer()
+        setContentView(root)
+        root.post { drawer.translationY = root.height.toFloat() }
+        applySettings()
+    }
 
-        // ---------- PANTALLA DE INICIO ----------
-        val home = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(56), dp(16), dp(24))
+    override fun onResume() {
+        super.onResume()
+        if (appliedKey != settingsKey()) applySettings()
+        loadApps()
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        closeDrawer()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        closeDrawer()
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (drawerOpen) swipes.onTouchEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun settingsKey(): String = "" + cols + "," + iconDp + "," + bgAlpha
+
+    private fun loadAccent() {
+        try {
+            if (Build.VERSION.SDK_INT >= 27) {
+                val wc = WallpaperManager.getInstance(this).getWallpaperColors(WallpaperManager.FLAG_SYSTEM)
+                val c = wc?.primaryColor
+                if (c != null) {
+                    val argb = c.toArgb()
+                    accent = Color.rgb(
+                        (Color.red(argb) * 4 + 255 * 6) / 10,
+                        (Color.green(argb) * 4 + 255 * 6) / 10,
+                        (Color.blue(argb) * 4 + 255 * 6) / 10
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            // se queda el color por defecto
         }
-        val clock = TextClock(this).apply {
-            format12Hour = "h:mm"
-            format24Hour = "HH:mm"
-            textSize = 68f
-            setTextColor(Color.WHITE)
-            setShadowLayer(10f, 0f, 2f, Color.argb(170, 0, 0, 0))
-            gravity = Gravity.CENTER
-        }
-        val date = TextClock(this).apply {
-            format12Hour = "EEEE, d MMMM"
-            format24Hour = "EEEE, d MMMM"
-            textSize = 17f
-            setTextColor(Color.WHITE)
-            setShadowLayer(8f, 0f, 2f, Color.argb(170, 0, 0, 0))
-            gravity = Gravity.CENTER
-        }
-        val swipeHint = View(this).apply {
-            background = pill(Color.argb(150, 255, 255, 255), 3)
-        }
-        dock = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            background = pill(Color.argb(90, 0, 0, 0), 30)
-            setPadding(dp(10), dp(10), dp(10), dp(10))
-        }
+    }
+
+    // ---------------------------------------------------------------- inicio
+    private fun buildHome() {
+        val home = LinearLayout(this)
+        home.orientation = LinearLayout.VERTICAL
+        home.setPadding(dp(16), dp(56), dp(16), dp(24))
+
+        val clock = TextClock(this)
+        clock.format12Hour = "h:mm"
+        clock.format24Hour = "HH:mm"
+        clock.textSize = 68f
+        clock.setTextColor(Color.WHITE)
+        clock.setShadowLayer(10f, 0f, 2f, Color.argb(170, 0, 0, 0))
+        clock.gravity = Gravity.CENTER
+
+        val date = TextClock(this)
+        date.format12Hour = "EEEE, d MMMM"
+        date.format24Hour = "EEEE, d MMMM"
+        date.textSize = 17f
+        date.setTextColor(accent)
+        date.setShadowLayer(8f, 0f, 2f, Color.argb(170, 0, 0, 0))
+        date.gravity = Gravity.CENTER
+
+        val searchPill = TextView(this)
+        searchPill.text = "Buscar apps, calcular, web..."
+        searchPill.textSize = 15f
+        searchPill.setTextColor(Color.argb(230, 255, 255, 255))
+        searchPill.background = pill(Color.argb(80, 0, 0, 0), 24)
+        searchPill.setPadding(dp(20), dp(12), dp(20), dp(12))
+        searchPill.setOnClickListener { openDrawer(true) }
+
+        val hint = View(this)
+        hint.background = pill(Color.argb(150, 255, 255, 255), 3)
+
+        dock = LinearLayout(this)
+        dock.orientation = LinearLayout.HORIZONTAL
+        dock.gravity = Gravity.CENTER
+        dock.background = pill(Color.argb(90, 0, 0, 0), 30)
+        dock.setPadding(dp(10), dp(10), dp(10), dp(10))
 
         home.addView(clock, LinearLayout.LayoutParams(-1, -2))
         home.addView(date, LinearLayout.LayoutParams(-1, -2))
+        val spLp = LinearLayout.LayoutParams(-1, -2)
+        spLp.topMargin = dp(22)
+        home.addView(searchPill, spLp)
         home.addView(View(this), LinearLayout.LayoutParams(-1, 0, 1f))
-        home.addView(swipeHint, LinearLayout.LayoutParams(dp(40), dp(5)).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
-            bottomMargin = dp(14)
-        })
+        val hLp = LinearLayout.LayoutParams(dp(40), dp(5))
+        hLp.gravity = Gravity.CENTER_HORIZONTAL
+        hLp.bottomMargin = dp(14)
+        home.addView(hint, hLp)
         home.addView(dock, LinearLayout.LayoutParams(-1, -2))
 
-        val homeGestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+        val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
 
             override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
@@ -140,104 +198,87 @@ class MainActivity : Activity() {
                 showSettings()
             }
         })
-        home.setOnTouchListener { _, ev -> homeGestures.onTouchEvent(ev) }
+        home.setOnTouchListener { _, ev -> gestures.onTouchEvent(ev) }
+        root.addView(home, FrameLayout.LayoutParams(-1, -1))
+    }
 
-        // ---------- CAJÓN DE APPS ----------
-        drawer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            isClickable = true
-            visibility = View.INVISIBLE
-            setPadding(dp(12), dp(28), dp(12), dp(8))
-        }
+    // ----------------------------------------------------------------- cajón
+    private fun buildDrawer() {
+        drawer = LinearLayout(this)
+        drawer.orientation = LinearLayout.VERTICAL
+        drawer.isClickable = true
+        drawer.visibility = View.INVISIBLE
+        drawer.setPadding(dp(12), dp(28), dp(12), dp(8))
 
         val handle = FrameLayout(this)
-        handle.addView(View(this).apply {
-            background = pill(Color.argb(170, 255, 255, 255), 3)
-        }, FrameLayout.LayoutParams(dp(44), dp(5), Gravity.CENTER))
-        handle.addView(TextView(this).apply {
-            text = "Ajustes"
-            textSize = 13f
-            setTextColor(Color.argb(220, 255, 255, 255))
-            setPadding(dp(10), dp(8), dp(4), dp(8))
-            setOnClickListener { showSettings() }
-        }, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
-        handle.addView(TextView(this).apply {
-            text = "Inicio"
-            textSize = 13f
-            setTextColor(Color.argb(220, 255, 255, 255))
-            setPadding(dp(4), dp(8), dp(10), dp(8))
-            setOnClickListener { closeDrawer() }
-        }, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL))
-
-        val handleGestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+        val bar = View(this)
+        bar.background = pill(Color.argb(170, 255, 255, 255), 3)
+        handle.addView(bar, FrameLayout.LayoutParams(dp(44), dp(5), Gravity.CENTER))
+        val tvSettings = TextView(this)
+        tvSettings.text = "Ajustes"
+        tvSettings.textSize = 13f
+        tvSettings.setTextColor(Color.argb(220, 255, 255, 255))
+        tvSettings.setPadding(dp(10), dp(8), dp(4), dp(8))
+        tvSettings.setOnClickListener { showSettings() }
+        handle.addView(tvSettings, FrameLayout.LayoutParams(-2, -2, Gravity.END or Gravity.CENTER_VERTICAL))
+        val tvHome = TextView(this)
+        tvHome.text = "Inicio"
+        tvHome.textSize = 13f
+        tvHome.setTextColor(Color.argb(220, 255, 255, 255))
+        tvHome.setPadding(dp(4), dp(8), dp(10), dp(8))
+        tvHome.setOnClickListener { closeDrawer() }
+        handle.addView(tvHome, FrameLayout.LayoutParams(-2, -2, Gravity.START or Gravity.CENTER_VERTICAL))
+        val tap = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean = true
-
             override fun onSingleTapUp(e: MotionEvent): Boolean {
                 closeDrawer()
                 return true
             }
-
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (vy > 500f) {
-                    closeDrawer()
-                    return true
-                }
-                return false
-            }
         })
-        handle.setOnTouchListener { _, ev -> handleGestures.onTouchEvent(ev) }
+        handle.setOnTouchListener { _, ev -> tap.onTouchEvent(ev) }
 
-        swipeDown = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
-                if (vy > 1200f && Math.abs(vy) > Math.abs(vx) * 1.5f && !grid.canScrollVertically(-1)) {
-                    closeDrawer()
-                    return true
-                }
-                return false
+        search = EditText(this)
+        search.hint = "Buscar app, calcular o buscar en la web"
+        search.setHintTextColor(Color.argb(190, 255, 255, 255))
+        search.setTextColor(Color.WHITE)
+        search.background = pill(Color.argb(70, 255, 255, 255), 24)
+        search.setPadding(dp(18), dp(10), dp(18), dp(10))
+        search.setSingleLine()
+        search.inputType = InputType.TYPE_CLASS_TEXT
+        search.imeOptions = EditorInfo.IME_ACTION_GO
+        search.setOnEditorActionListener { _, _, _ ->
+            val first = shown.firstOrNull()
+            if (first != null) launch(first) else webSearch()
+            true
+        }
+        search.addTextChangedListener(object : TextWatcher {
+            override fun afterTextChanged(s: Editable?) {
+                filter()
             }
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
         })
 
-        search = EditText(this).apply {
-            hint = "Buscar app..."
-            setHintTextColor(Color.argb(190, 255, 255, 255))
-            setTextColor(Color.WHITE)
-            background = pill(Color.argb(70, 255, 255, 255), 24)
-            setPadding(dp(18), dp(10), dp(18), dp(10))
-            setSingleLine()
-            inputType = InputType.TYPE_CLASS_TEXT
-            imeOptions = EditorInfo.IME_ACTION_GO
-            setOnEditorActionListener { _, _, _ ->
-                shown.firstOrNull()?.let { launch(it) }
-                true
-            }
-            addTextChangedListener(object : TextWatcher {
-                override fun afterTextChanged(s: Editable?) {
-                    filter(s.toString())
-                }
-                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
-            })
-        }
+        calcRow = TextView(this)
+        calcRow.textSize = 22f
+        calcRow.setTextColor(accent)
+        calcRow.setPadding(dp(10), dp(12), dp(10), dp(4))
+        calcRow.visibility = View.GONE
 
-        frequentLabel = TextView(this).apply {
-            text = "Más usadas"
-            textSize = 13f
-            setTextColor(Color.argb(220, 255, 255, 255))
-            setPadding(dp(6), dp(14), 0, dp(6))
-        }
-        frequentRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            weightSum = 5f
-        }
+        webRow = TextView(this)
+        webRow.textSize = 15f
+        webRow.setTextColor(Color.WHITE)
+        webRow.setPadding(dp(10), dp(10), dp(10), dp(6))
+        webRow.visibility = View.GONE
+        webRow.setOnClickListener { webSearch() }
 
-        grid = GridView(this).apply {
-            verticalSpacing = dp(14)
-            selector = ColorDrawable(Color.TRANSPARENT)
-            overScrollMode = View.OVER_SCROLL_NEVER
-            isVerticalScrollBarEnabled = false
-            setPadding(0, dp(14), 0, 0)
-            clipToPadding = false
-        }
+        grid = GridView(this)
+        grid.verticalSpacing = dp(14)
+        grid.selector = ColorDrawable(Color.TRANSPARENT)
+        grid.overScrollMode = View.OVER_SCROLL_NEVER
+        grid.isVerticalScrollBarEnabled = false
+        grid.setPadding(0, dp(14), 0, 0)
+        grid.clipToPadding = false
         grid.setOnItemClickListener { _, _, pos, _ ->
             if (pos in shown.indices) launch(shown[pos])
         }
@@ -246,55 +287,59 @@ class MainActivity : Activity() {
             true
         }
 
+        tabsRow = LinearLayout(this)
+        tabsRow.orientation = LinearLayout.HORIZONTAL
+        tabsScroll = HorizontalScrollView(this)
+        tabsScroll.isHorizontalScrollBarEnabled = false
+        tabsScroll.background = pill(Color.argb(70, 0, 0, 0), 22)
+        tabsScroll.addView(tabsRow)
+
+        swipes = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                if (Math.abs(vy) > Math.abs(vx) * 1.5f) {
+                    if (vy > 1200f && !grid.canScrollVertically(-1)) {
+                        closeDrawer()
+                        return true
+                    }
+                } else if (Math.abs(vx) > 1500f && search.text.isEmpty()) {
+                    val loc = IntArray(2)
+                    tabsScroll.getLocationOnScreen(loc)
+                    if (e1 != null && e1.rawY >= loc[1]) return false
+                    stepCat(if (vx < 0) 1 else -1)
+                    return true
+                }
+                return false
+            }
+        })
+
         drawer.addView(handle, LinearLayout.LayoutParams(-1, dp(36)))
         drawer.addView(search, LinearLayout.LayoutParams(-1, -2))
-        drawer.addView(frequentLabel, LinearLayout.LayoutParams(-1, -2))
-        drawer.addView(frequentRow, LinearLayout.LayoutParams(-1, -2))
+        drawer.addView(calcRow, LinearLayout.LayoutParams(-1, -2))
+        drawer.addView(webRow, LinearLayout.LayoutParams(-1, -2))
         drawer.addView(grid, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        root.addView(home, FrameLayout.LayoutParams(-1, -1))
+        val tLp = LinearLayout.LayoutParams(-1, -2)
+        tLp.topMargin = dp(8)
+        drawer.addView(tabsScroll, tLp)
         root.addView(drawer, FrameLayout.LayoutParams(-1, -1))
-        setContentView(root)
-        root.post { drawer.translationY = root.height.toFloat() }
-
-        applySettings()
     }
 
-    override fun onResume() {
-        super.onResume()
-        if (appliedKey != settingsKey()) applySettings()
-        loadApps()
+    internal fun openDrawer(focusSearch: Boolean = false) {
+        if (!drawerOpen) {
+            drawerOpen = true
+            drawer.visibility = View.VISIBLE
+            drawer.translationY = root.height.toFloat()
+            drawer.animate().translationY(0f).setDuration(220).start()
+        }
+        if (focusSearch) {
+            search.postDelayed({
+                search.requestFocus()
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(search, InputMethodManager.SHOW_IMPLICIT)
+            }, 300)
+        }
     }
 
-    private fun settingsKey(): String = "" + cols + "," + iconDp + "," + bgAlpha
-
-    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (drawerOpen) swipeDown.onTouchEvent(ev)
-        return super.dispatchTouchEvent(ev)
-    }
-
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        closeDrawer()
-    }
-
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        closeDrawer()
-    }
-
-    // ------------------------------------------------------------------
-    //  Cajón: abrir y cerrar
-    // ------------------------------------------------------------------
-    private fun openDrawer() {
-        if (drawerOpen) return
-        drawerOpen = true
-        drawer.visibility = View.VISIBLE
-        drawer.translationY = root.height.toFloat()
-        drawer.animate().translationY(0f).setDuration(220).start()
-    }
-
-    private fun closeDrawer() {
+    internal fun closeDrawer() {
         if (!drawerOpen) return
         drawerOpen = false
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -305,22 +350,116 @@ class MainActivity : Activity() {
             .translationY(root.height.toFloat())
             .setDuration(200)
             .withEndAction {
-                if (!drawerOpen) drawer.visibility = View.INVISIBLE
+                if (!drawerOpen) {
+                    drawer.visibility = View.INVISIBLE
+                    selectCat(Cat.ALL)
+                }
             }
             .start()
     }
 
-    // ------------------------------------------------------------------
-    //  Carga de apps
-    // ------------------------------------------------------------------
-    private fun loadApps() {
+    private fun webSearch() {
+        val q = search.text.toString().trim()
+        if (q.isEmpty()) return
+        try {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(q)))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(i)
+        } catch (e: Exception) {
+            // sin navegador
+        }
+        closeDrawer()
+    }
+
+    // ------------------------------------------------------------ categorías
+    private fun count(a: App): Int = prefs.getInt("c_" + a.pkg, 0)
+
+    private fun buildTabs() {
+        tabsRow.removeAllViews()
+        val cats = ArrayList<String>()
+        if (allApps.any { count(it) > 0 }) cats.add(Cat.USED)
+        cats.add(Cat.ALL)
+        for (c in Cat.assignable) {
+            if (allApps.any { it.cat == c }) cats.add(c)
+        }
+        if (currentCat !in cats) currentCat = Cat.ALL
+        visibleCats = cats
+        for (c in cats) {
+            val t = TextView(this)
+            val sel = c == currentCat
+            t.text = c
+            t.textSize = 14f
+            t.setPadding(dp(14), dp(9), dp(14), dp(9))
+            t.setTextColor(if (sel) accent else Color.argb(210, 255, 255, 255))
+            t.setTypeface(null, if (sel) Typeface.BOLD else Typeface.NORMAL)
+            if (sel) t.background = pill(Color.argb(70, 255, 255, 255), 18)
+            t.setOnClickListener { selectCat(c) }
+            tabsRow.addView(t)
+        }
+    }
+
+    private fun selectCat(c: String) {
+        currentCat = c
+        buildTabs()
+        filter()
+        grid.setSelection(0)
+    }
+
+    private fun stepCat(d: Int) {
+        val i = visibleCats.indexOf(currentCat)
+        if (i < 0) return
+        val n = (i + d).coerceIn(0, visibleCats.size - 1)
+        if (n != i) selectCat(visibleCats[n])
+    }
+
+    internal fun filter() {
+        val q = search.text.toString().trim()
+        shown = if (q.isEmpty()) {
+            when (currentCat) {
+                Cat.ALL -> allApps
+                Cat.USED -> allApps.filter { count(it) > 0 }.sortedByDescending { count(it) }.take(16)
+                else -> allApps.filter { it.cat == currentCat }
+            }
+        } else {
+            allApps.filter { it.label.contains(q, ignoreCase = true) }
+                .sortedBy { if (it.label.startsWith(q, ignoreCase = true)) 0 else 1 }
+        }
+        adapter?.notifyDataSetChanged()
+        tabsScroll.visibility = if (q.isEmpty()) View.VISIBLE else View.GONE
+        val r = if (q.isEmpty()) null else Calc.eval(q)
+        if (r != null) {
+            calcRow.text = "= " + Calc.format(r)
+            calcRow.visibility = View.VISIBLE
+        } else {
+            calcRow.visibility = View.GONE
+        }
+        if (q.isEmpty()) {
+            webRow.visibility = View.GONE
+        } else {
+            webRow.text = "Buscar \"" + q + "\" en la web"
+            webRow.visibility = View.VISIBLE
+        }
+    }
+
+    // ------------------------------------------------------------------ apps
+    internal fun hiddenSet(): MutableSet<String> =
+        HashSet<String>(prefs.getStringSet("hidden", null) ?: emptySet<String>())
+
+    internal fun loadApps() {
         if (loading) return
         loading = true
         Thread {
             val pm = packageManager
             val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
             val list = pm.queryIntentActivities(intent, 0)
-                .map { App(it.loadLabel(pm).toString(), it.activityInfo.packageName, it.loadIcon(pm)) }
+                .map {
+                    val ai = it.activityInfo.applicationInfo
+                    val pkg = it.activityInfo.packageName
+                    val label = it.loadLabel(pm).toString()
+                    val auto = Cat.classify(pkg, label, ai.category, (ai.flags and ApplicationInfo.FLAG_IS_GAME) != 0)
+                    val cat = prefs.getString("cat_" + pkg, null) ?: auto
+                    App(label, pkg, it.loadIcon(pm), cat)
+                }
                 .distinctBy { it.pkg }
                 .sortedBy { it.label.lowercase() }
             runOnUiThread {
@@ -331,39 +470,34 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun refreshLists() {
+    internal fun refreshLists() {
         val hidden = hiddenSet()
         allApps = everyApp.filter { it.pkg !in hidden }
         buildDock()
-        buildFrequent()
-        filter(search.text.toString())
+        buildTabs()
+        filter()
     }
 
-    private fun filter(q: String) {
-        val query = q.trim()
-        shown = if (query.isEmpty()) allApps
-        else allApps.filter { it.label.contains(query, ignoreCase = true) }
-        adapter?.notifyDataSetChanged()
-        val showFrequent = query.isEmpty() && frequentRow.childCount > 0
-        val vis = if (showFrequent) View.VISIBLE else View.GONE
-        frequentLabel.visibility = vis
-        frequentRow.visibility = vis
-    }
-
-    private fun applySettings() {
+    internal fun applySettings() {
         appliedKey = settingsKey()
         drawer.background = ColorDrawable(Color.argb(bgAlpha, 0, 0, 0))
         grid.numColumns = cols
         adapter = AppAdapter()
         grid.adapter = adapter
         buildDock()
-        buildFrequent()
-        filter(search.text.toString())
+        buildTabs()
+        filter()
     }
 
-    // ------------------------------------------------------------------
-    //  Dock
-    // ------------------------------------------------------------------
+    private fun launch(app: App) {
+        val i = packageManager.getLaunchIntentForPackage(app.pkg) ?: return
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(i)
+        prefs.edit().putInt("c_" + app.pkg, count(app) + 1).apply()
+        closeDrawer()
+    }
+
+    // ------------------------------------------------------------------ dock
     private fun pkgFor(i: Intent): String? {
         val pm = packageManager
         val r = pm.resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
@@ -385,7 +519,7 @@ class MainActivity : Activity() {
         return list
     }
 
-    private fun dockPkgs(): List<String> {
+    internal fun dockPkgs(): List<String> {
         val raw = prefs.getString("dock", null) ?: return defaultDock()
         return raw.split(",").filter { it.isNotBlank() }
     }
@@ -411,13 +545,13 @@ class MainActivity : Activity() {
         dock.visibility = if (items.isEmpty()) View.INVISIBLE else View.VISIBLE
     }
 
-    private fun toggleDock(app: App, inDock: Boolean) {
+    internal fun toggleDock(app: App, inDock: Boolean) {
         val l = dockPkgs().toMutableList()
         if (inDock) {
             l.remove(app.pkg)
         } else {
             if (l.size >= 5) {
-                Toast.makeText(this, "El dock está lleno (máximo 5)", Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(this, "El dock está lleno (máximo 5)", android.widget.Toast.LENGTH_SHORT).show()
                 return
             }
             l.add(app.pkg)
@@ -426,30 +560,7 @@ class MainActivity : Activity() {
         buildDock()
     }
 
-    // ------------------------------------------------------------------
-    //  Más usadas
-    // ------------------------------------------------------------------
-    private fun buildFrequent() {
-        frequentRow.removeAllViews()
-        val top = allApps
-            .filter { prefs.getInt("c_" + it.pkg, 0) > 0 }
-            .sortedByDescending { prefs.getInt("c_" + it.pkg, 0) }
-            .take(5)
-        for (app in top) {
-            val cell = makeCell()
-            bindCell(cell, app)
-            cell.setOnClickListener { launch(app) }
-            cell.setOnLongClickListener {
-                showMenu(app)
-                true
-            }
-            frequentRow.addView(cell, LinearLayout.LayoutParams(0, -2, 1f))
-        }
-    }
-
-    // ------------------------------------------------------------------
-    //  Celdas de app
-    // ------------------------------------------------------------------
+    // ----------------------------------------------------------------- celdas
     private fun makeCell(): LinearLayout {
         val c = LinearLayout(this)
         c.orientation = LinearLayout.VERTICAL
@@ -468,150 +579,16 @@ class MainActivity : Activity() {
         return c
     }
 
-    private fun bindCell(c: View, app: App) {
-        val g = c as ViewGroup
-        (g.getChildAt(0) as ImageView).setImageDrawable(app.icon)
-        (g.getChildAt(1) as TextView).text = app.label
-    }
-
     inner class AppAdapter : BaseAdapter() {
         override fun getCount(): Int = shown.size
         override fun getItem(p: Int): Any = shown[p]
         override fun getItemId(p: Int): Long = p.toLong()
         override fun getView(p: Int, convert: View?, parent: ViewGroup?): View {
             val v = convert ?: makeCell()
-            bindCell(v, shown[p])
+            val g = v as ViewGroup
+            (g.getChildAt(0) as ImageView).setImageDrawable(shown[p].icon)
+            (g.getChildAt(1) as TextView).text = shown[p].label
             return v
         }
-    }
-
-    // ------------------------------------------------------------------
-    //  Acciones
-    // ------------------------------------------------------------------
-    private fun launch(app: App) {
-        val i = packageManager.getLaunchIntentForPackage(app.pkg) ?: return
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        startActivity(i)
-        prefs.edit().putInt("c_" + app.pkg, prefs.getInt("c_" + app.pkg, 0) + 1).apply()
-        closeDrawer()
-    }
-
-    private fun showMenu(app: App) {
-        val inDock = dockPkgs().contains(app.pkg)
-        val options = arrayOf(
-            "Información de la app",
-            "Desinstalar",
-            "Ocultar",
-            if (inDock) "Quitar del dock" else "Agregar al dock"
-        )
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle(app.label)
-            .setItems(options) { _, which ->
-                when (which) {
-                    0 -> startActivity(
-                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + app.pkg))
-                    )
-                    1 -> startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:" + app.pkg)))
-                    2 -> hideApp(app)
-                    3 -> toggleDock(app, inDock)
-                    else -> {}
-                }
-            }
-            .show()
-    }
-
-    private fun hiddenSet(): MutableSet<String> =
-        HashSet<String>(prefs.getStringSet("hidden", null) ?: emptySet<String>())
-
-    private fun hideApp(app: App) {
-        val set = hiddenSet()
-        set.add(app.pkg)
-        prefs.edit().putStringSet("hidden", set).apply()
-        refreshLists()
-        Toast.makeText(this, app.label + " oculta (se restaura en Ajustes)", Toast.LENGTH_LONG).show()
-    }
-
-    private fun showHidden() {
-        val hidden = hiddenSet()
-        val apps = everyApp.filter { it.pkg in hidden }
-        if (apps.isEmpty()) {
-            Toast.makeText(this, "No hay apps ocultas", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val checked = BooleanArray(apps.size) { true }
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Apps ocultas (desmarca para mostrar)")
-            .setMultiChoiceItems(apps.map { it.label }.toTypedArray(), checked) { _, i, c ->
-                checked[i] = c
-            }
-            .setPositiveButton("Guardar") { _, _ ->
-                val set = hiddenSet()
-                apps.forEachIndexed { i, a -> if (!checked[i]) set.remove(a.pkg) }
-                prefs.edit().putStringSet("hidden", set).apply()
-                refreshLists()
-            }
-            .setNegativeButton("Cancelar", null)
-            .show()
-    }
-
-    private fun expandNotifications() {
-        try {
-            val sbs = getSystemService("statusbar")
-            Class.forName("android.app.StatusBarManager")
-                .getMethod("expandNotificationsPanel")
-                .invoke(sbs)
-        } catch (e: Exception) {
-            Toast.makeText(this, "No se pudo abrir las notificaciones", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    // ------------------------------------------------------------------
-    //  Ajustes
-    // ------------------------------------------------------------------
-    private fun showSettings() {
-        val box = LinearLayout(this)
-        box.orientation = LinearLayout.VERTICAL
-        box.setPadding(dp(20), dp(8), dp(20), 0)
-
-        fun addSlider(title: String, maxV: Int, startV: Int, onChange: (Int) -> Unit) {
-            val label = TextView(this)
-            label.text = title
-            label.setTextColor(Color.WHITE)
-            label.setPadding(0, dp(14), 0, 0)
-            val bar = SeekBar(this)
-            bar.max = maxV
-            bar.progress = startV
-            bar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                    if (fromUser) onChange(p)
-                }
-                override fun onStartTrackingTouch(s: SeekBar?) {}
-                override fun onStopTrackingTouch(s: SeekBar?) {}
-            })
-            box.addView(label)
-            box.addView(bar)
-        }
-
-        addSlider("Columnas del cajón (3 a 6)", 3, cols - 3) {
-            prefs.edit().putInt("cols", it + 3).apply()
-        }
-        addSlider("Tamaño de íconos", 32, iconDp - 40) {
-            prefs.edit().putInt("icon", it + 40).apply()
-        }
-        addSlider("Opacidad del fondo del cajón", 200, bgAlpha - 40) {
-            prefs.edit().putInt("alpha", it + 40).apply()
-        }
-
-        val hiddenBtn = Button(this)
-        hiddenBtn.text = "Apps ocultas..."
-        hiddenBtn.setOnClickListener { showHidden() }
-        box.addView(hiddenBtn, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(18) })
-
-        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Ajustes del launcher")
-            .setView(box)
-            .setPositiveButton("Listo", null)
-            .setOnDismissListener { applySettings() }
-            .show()
     }
 }
